@@ -70,6 +70,12 @@ DIR_TO_VEC = [
     np.array((0, -1)),
 ]
 
+class Direction(IntEnum):
+    right = 0
+    down = 1
+    left = 2
+    up = 3
+
 class WorldObj:
     """
     Base class for grid world objects
@@ -152,14 +158,24 @@ class WorldObj:
         raise NotImplementedError
 
 class Goal(WorldObj):
-    def __init__(self):
-        super().__init__('goal', 'green')
+    def __init__(self, color='green'):
+        super().__init__('goal', color)
 
     def can_overlap(self):
         return True
 
     def render(self, img):
         fill_coords(img, point_in_rect(0, 1, 0, 1), COLORS[self.color])
+
+class GoodGoal(Goal):
+    def __init__(self):
+        super().__init__('green')
+        self.goal_type = 'good'
+    
+class BadGoal(Goal):
+    def __init__(self):
+        super().__init__('red')
+        self.goal_type = 'bad'
 
 class Floor(WorldObj):
     """
@@ -650,7 +666,8 @@ class MiniGridEnv(gym.Env):
         max_steps=100,
         see_through_walls=False,
         seed=1337,
-        agent_view_size=7
+        agent_view_size=7,
+        allow_unknown_actions=False
     ):
         # Can't set both grid_size and width/height
         if grid_size:
@@ -659,7 +676,7 @@ class MiniGridEnv(gym.Env):
             height = grid_size
 
         # Action enumeration for this environment
-        self.actions = MiniGridEnv.Actions
+        self.actions = self.Actions
 
         # Actions are discrete integer values
         self.action_space = spaces.Discrete(len(self.actions))
@@ -692,6 +709,7 @@ class MiniGridEnv(gym.Env):
         self.height = height
         self.max_steps = max_steps
         self.see_through_walls = see_through_walls
+        self.allow_unknown_actions = allow_unknown_actions
 
         # Current position and direction of the agent
         self.agent_pos = None
@@ -1109,17 +1127,17 @@ class MiniGridEnv(gym.Env):
         fwd_cell = self.grid.get(*fwd_pos)
 
         # Rotate left
-        if action == self.actions.left:
+        if action == MiniGridEnv.Actions.left:
             self.agent_dir -= 1
             if self.agent_dir < 0:
                 self.agent_dir += 4
 
         # Rotate right
-        elif action == self.actions.right:
+        elif action == MiniGridEnv.Actions.right:
             self.agent_dir = (self.agent_dir + 1) % 4
 
         # Move forward
-        elif action == self.actions.forward:
+        elif action == MiniGridEnv.Actions.forward:
             if fwd_cell == None or fwd_cell.can_overlap():
                 self.agent_pos = fwd_pos
             if fwd_cell != None and fwd_cell.type == 'goal':
@@ -1129,7 +1147,7 @@ class MiniGridEnv(gym.Env):
                 done = True
 
         # Pick up an object
-        elif action == self.actions.pickup:
+        elif action == MiniGridEnv.Actions.pickup:
             if fwd_cell and fwd_cell.can_pickup():
                 if self.carrying is None:
                     self.carrying = fwd_cell
@@ -1137,23 +1155,26 @@ class MiniGridEnv(gym.Env):
                     self.grid.set(*fwd_pos, None)
 
         # Drop an object
-        elif action == self.actions.drop:
+        elif action == MiniGridEnv.Actions.drop:
             if not fwd_cell and self.carrying:
                 self.grid.set(*fwd_pos, self.carrying)
                 self.carrying.cur_pos = fwd_pos
                 self.carrying = None
 
         # Toggle/activate an object
-        elif action == self.actions.toggle:
+        elif action == MiniGridEnv.Actions.toggle:
             if fwd_cell:
                 fwd_cell.toggle(self, fwd_pos)
 
         # Done action (not used by default)
-        elif action == self.actions.done:
+        elif action == MiniGridEnv.Actions.done:
             pass
 
         else:
-            assert False, "unknown action"
+            if self.allow_unknown_actions:
+                pass
+            else:
+                assert False, "unknown action"
 
         if self.step_count >= self.max_steps:
             done = True
@@ -1298,3 +1319,43 @@ class MiniGridEnv(gym.Env):
         if self.window:
             self.window.close()
         return
+
+
+class MyMiniGridEnv(MiniGridEnv):
+    # Enumeration of possible actions (4 directions + stay)
+    class Actions(IntEnum):
+        _ignore_ = 'member cls val'
+        cls = vars()
+        val = -1
+        for member in list(Direction):
+            val = member.value
+            cls[member.name] = val
+        cls['stay'] = val + 1
+
+    def __init__(self, grid_size=9, width=None, height=None, max_steps=100, see_through_walls=False):
+        super(MyMiniGridEnv, self).__init__(grid_size, width, height, max_steps=max_steps, see_through_walls=see_through_walls, allow_unknown_actions=True)
+
+    def step(self, action):
+        prev_pos = self.agent_pos
+        if action == MyMiniGridEnv.Actions.up:
+            self.agent_dir = Direction.up
+        elif action == MyMiniGridEnv.Actions.down:
+            self.agent_dir = Direction.down
+        elif action == MyMiniGridEnv.Actions.left:
+            self.agent_dir = Direction.left
+        elif action == MyMiniGridEnv.Actions.right:
+            self.agent_dir = Direction.right
+
+        super_class_action = action
+        if action != MyMiniGridEnv.Actions.stay:
+            super_class_action = MiniGridEnv.Actions.forward
+        obs, sparse_reward, done, info = super(MyMiniGridEnv, self).step(super_class_action)
+
+        dense_reward = self._dense_reward(prev_pos, self.agent_pos)
+
+        return obs, sparse_reward + dense_reward, done, info
+
+    def _dense_reward(self, s, s_prime):
+        raise NotImplementedError("Subclass must override this method!")
+
+    
